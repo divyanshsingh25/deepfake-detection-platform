@@ -23,6 +23,7 @@ from utils.gradcam         import get_target_layer, GradCAM
 from utils.voting          import ensemble_vote, compute_risk_level, get_recommendation
 from utils.report_generator import generate_report
 from train import get_model
+import base64, io, requests as req
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -39,28 +40,31 @@ TEMP_DIR          = tempfile.mkdtemp()
 FRAMES_PER_VIDEO  = 20
 DEVICE            = "cuda" if torch.cuda.is_available() else "cpu"
 
+# ── HuggingFace API ───────────────────────────────────────────────────────────
+HF_TOKEN   = st.secrets.get("HF_TOKEN", "")  # set in Streamlit Cloud secrets
+HF_MODEL   = "Wvolf/ViT-Deepfake-Detection"
+HF_API_URL = f"https://router.huggingface.co/hf-inference/models/{HF_MODEL}"
+
+# ── Gemini API ────────────────────────────────────────────────────────────────
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")  # set in Streamlit Cloud secrets
+GEMINI_URL     = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+
 # ── Global CSS  ───────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* ── Base & font ── */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
-html, body, [class*="css"] {
-    font-family: 'Inter', 'Segoe UI', sans-serif !important;
-}
+html, body, [class*="css"] { font-family: 'Inter', 'Segoe UI', sans-serif !important; }
 
-/* Force dark background on everything */
 .stApp {
     background: linear-gradient(135deg, #0a0e27 0%, #0f1535 50%, #0a0e27 100%) !important;
     min-height: 100vh;
 }
 
-/* Hide default Streamlit chrome */
 #MainMenu, footer, header { visibility: hidden; }
 .block-container { padding: 0 !important; max-width: 100% !important; }
 section[data-testid="stSidebar"] { display: none; }
 
-/* ── Navbar ── */
 .ds-navbar {
     background: rgba(2, 6, 23, 0.97);
     backdrop-filter: blur(12px);
@@ -91,7 +95,6 @@ section[data-testid="stSidebar"] { display: none; }
 }
 @keyframes dspulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
 
-/* ── Privacy banner ── */
 .ds-banner {
     display:flex; align-items:center; justify-content:center; gap:1.5rem;
     margin: 2rem 2.5rem 0;
@@ -104,7 +107,6 @@ section[data-testid="stSidebar"] { display: none; }
 .ds-banner span { color:#94a3b8; }
 .ds-banner .sep { color:rgba(148,163,184,0.3); }
 
-/* ── Main grid ── */
 .ds-grid {
     display: grid;
     grid-template-columns: 1.15fr 1fr;
@@ -112,7 +114,6 @@ section[data-testid="stSidebar"] { display: none; }
     padding: 1.75rem 2.5rem 2.5rem;
 }
 
-/* ── Upload card ── */
 .ds-upload-card {
     background: rgba(2,6,23,0.65);
     border: 2px dashed rgba(148,163,184,0.25);
@@ -134,7 +135,6 @@ section[data-testid="stSidebar"] { display: none; }
 .ds-upload-title { font-size:1.6rem; font-weight:700; color:#fff; margin-bottom:0.35rem; }
 .ds-upload-sub   { color:#94a3b8; font-size:0.9rem; margin-bottom:1.75rem; }
 
-/* ── Right panel states ── */
 .ds-await-panel {
     background: rgba(2,6,23,0.65);
     border: 1px solid rgba(148,163,184,0.15);
@@ -148,7 +148,6 @@ section[data-testid="stSidebar"] { display: none; }
 .ds-await-title { font-size:1.4rem; font-weight:700; letter-spacing:2px; color:#64748b; margin-bottom:0.5rem; }
 .ds-await-sub   { color:#475569; font-size:0.88rem; }
 
-/* ── Terminal / scanning panel ── */
 .ds-scan-panel {
     background: rgba(2,6,23,0.65);
     border: 1px solid rgba(37,99,235,0.3);
@@ -176,7 +175,6 @@ section[data-testid="stSidebar"] { display: none; }
     text-align:left; min-height:140px;
 }
 
-/* ── Result panel ── */
 .ds-result-panel {
     background: rgba(2,6,23,0.85);
     border: 1px solid rgba(37,99,235,0.35);
@@ -208,12 +206,10 @@ section[data-testid="stSidebar"] { display: none; }
 .ds-pbar-fill-real { height:100%; border-radius:10px; background:linear-gradient(90deg,#22c55e,#16a34a); transition:width 1s; }
 .ds-pbar-fill-fake { height:100%; border-radius:10px; background:linear-gradient(90deg,#ef4444,#dc2626); transition:width 1s; }
 
-/* ── Risk badge ── */
 .ds-risk-high   { display:inline-block; background:#7f1d1d; color:#fca5a5; border:1px solid #ef4444; padding:0.25rem 0.9rem; border-radius:20px; font-size:0.8rem; font-weight:700; letter-spacing:1px; }
 .ds-risk-medium { display:inline-block; background:#7c2d12; color:#fdba74; border:1px solid #f97316; padding:0.25rem 0.9rem; border-radius:20px; font-size:0.8rem; font-weight:700; letter-spacing:1px; }
 .ds-risk-low    { display:inline-block; background:#14532d; color:#86efac; border:1px solid #22c55e; padding:0.25rem 0.9rem; border-radius:20px; font-size:0.8rem; font-weight:700; letter-spacing:1px; }
 
-/* ── Analysis breakdown box ── */
 .ds-breakdown {
     background:rgba(15,21,53,0.6); border:1px solid rgba(37,99,235,0.15);
     border-radius:10px; padding:1.1rem 1.25rem; margin-top:1rem;
@@ -223,7 +219,6 @@ section[data-testid="stSidebar"] { display: none; }
 .ds-breakdown li { color:#94a3b8; font-size:0.8rem; padding:0.3rem 0; display:flex; align-items:center; gap:0.5rem; }
 .ds-breakdown li::before { content:"✓"; color:#2563eb; font-weight:800; }
 
-/* ── Section cards (about / metrics) ── */
 .ds-section { padding: 2rem 2.5rem; }
 .ds-card {
     background: rgba(2,6,23,0.65);
@@ -239,14 +234,12 @@ section[data-testid="stSidebar"] { display: none; }
 .ds-feat-card h4 { color:#2563eb; margin-bottom:0.4rem; font-size:0.95rem; }
 .ds-feat-card p  { font-size:0.82rem; color:#94a3b8; margin:0; }
 
-/* ── Footer ── */
 .ds-footer {
     text-align:center; padding:1.5rem 2rem;
     border-top:1px solid rgba(148,163,184,0.12);
     color:#475569; font-size:0.78rem;
 }
 
-/* ── Streamlit widget overrides ── */
 .stFileUploader > div { background:transparent !important; border:none !important; }
 .stFileUploader label { color:#94a3b8 !important; }
 
@@ -262,7 +255,6 @@ div[data-testid="stTabs"] button[aria-selected="true"] {
     border-bottom: 2px solid #2563eb !important;
 }
 
-/* Streamlit metric boxes – dark version */
 div[data-testid="metric-container"] {
     background: rgba(15,21,53,0.7) !important;
     border: 1px solid rgba(37,99,235,0.2) !important;
@@ -272,10 +264,8 @@ div[data-testid="metric-container"] {
 div[data-testid="metric-container"] label { color:#94a3b8 !important; }
 div[data-testid="metric-container"] div[data-testid="stMetricValue"] { color:#e2e8f0 !important; }
 
-/* Progress bar color */
 div[data-testid="stProgressBar"] > div > div { background-color: #2563eb !important; }
 
-/* Buttons */
 .stButton > button {
     background: linear-gradient(135deg,#2563eb,#1d4ed8) !important;
     color: white !important; border: none !important;
@@ -284,7 +274,6 @@ div[data-testid="stProgressBar"] > div > div { background-color: #2563eb !import
 }
 .stButton > button:hover { transform: translateY(-2px) !important; box-shadow: 0 8px 20px rgba(37,99,235,0.35) !important; }
 
-/* Download button */
 .stDownloadButton > button {
     background: rgba(37,99,235,0.15) !important;
     color: #60a5fa !important;
@@ -292,20 +281,12 @@ div[data-testid="stProgressBar"] > div > div { background-color: #2563eb !import
     border-radius: 8px !important; font-weight:600 !important;
 }
 
-/* Expander */
 details { background: rgba(15,21,53,0.5) !important; border: 1px solid rgba(37,99,235,0.2) !important; border-radius:10px !important; }
 details summary { color: #94a3b8 !important; }
 
-/* st.success / error / info */
 div[data-testid="stAlert"] { border-radius:10px !important; }
-
-/* Image captions */
 .stImage figcaption { color:#64748b !important; font-size:0.78rem !important; }
-
-/* Selectbox / slider labels */
 label[data-testid="stWidgetLabel"] { color:#94a3b8 !important; }
-
-/* Tab strip container */
 div[data-testid="stTabs"] { background: transparent !important; padding: 0 2.5rem; border-bottom: 1px solid rgba(148,163,184,0.1); }
 </style>
 """, unsafe_allow_html=True)
@@ -327,6 +308,151 @@ def load_model_cached(model_name, model_path):
 @st.cache_resource(show_spinner=False)
 def load_detector():
     return get_face_detector(device="cpu")
+
+
+def query_huggingface(face_pil: "Image.Image") -> dict:
+    """
+    Send face crop to HuggingFace Inference API.
+    Returns dict with fake_score (0-1) and label.
+    Falls back gracefully if API is unavailable.
+    """
+    try:
+        buf = io.BytesIO()
+        face_pil.resize((224, 224)).save(buf, format="JPEG", quality=90)
+        img_bytes = buf.getvalue()
+
+        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+        response = req.post(
+            HF_API_URL,
+            headers=headers,
+            data=img_bytes,
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            results = response.json()
+            # Parse results — model returns [{label, score}, ...]
+            if isinstance(results, list):
+                fake_score = 0.0
+                real_score = 0.0
+                for item in results:
+                    lbl = item.get("label", "").lower()
+                    sc  = float(item.get("score", 0))
+                    if "fake" in lbl or "1" in lbl:
+                        fake_score = sc
+                    elif "real" in lbl or "0" in lbl:
+                        real_score = sc
+                return {
+                    "available" : True,
+                    "fake_score": fake_score,
+                    "real_score": real_score,
+                    "label"     : "Fake" if fake_score > real_score else "Real"
+                }
+        # Model loading (503) — common on free tier
+        return {"available": False, "reason": f"API status {response.status_code}"}
+
+    except Exception as e:
+        return {"available": False, "reason": str(e)}
+
+
+def query_gemini(face_pil) -> dict:
+    """
+    Ask Gemini Vision to analyse the face for deepfake signs.
+    Returns fake_score (0-1), real_score, label.
+    Falls back gracefully if API unavailable.
+    """
+    try:
+        buf = io.BytesIO()
+        face_pil.resize((224, 224)).save(buf, format="JPEG", quality=90)
+        img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        prompt = (
+            "You are an expert forensic AI image analyst. "
+            "Examine this image for ANY signs of AI generation or manipulation including: "
+            "1. DEEPFAKE: unnatural skin, blurry face edges, lighting inconsistency, eye reflection mismatch. "
+            "2. AI-GENERATED (Midjourney/DALL-E/Gemini/Stable Diffusion): overly perfect skin, "
+            "unrealistic background blur, too-perfect lighting, wrong finger count, distorted text, "
+            "warped background objects, painterly quality, overly symmetrical features. "
+            "3. MANIPULATION: shadow inconsistency, copy-paste artifacts, color mismatch. "
+            "Be strict. Modern AI generators are convincing but have subtle tells. "
+            "Reply with ONLY valid JSON, no markdown: "
+            '{"verdict": "Real" or "Fake", "fake_probability": 0.0 to 1.0, "reason": "under 15 words"}'
+        )
+
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
+                ]
+            }],
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 200}
+        }
+
+        response = req.post(
+            f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+            json=payload,
+            timeout=15
+        )
+
+        if response.status_code == 200:
+            data     = response.json()
+            raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            # Clean up markdown fences if present
+            raw_text = raw_text.replace("```json","").replace("```","").strip()
+            import json as _json
+            result   = _json.loads(raw_text)
+            fake_p   = float(result.get("fake_probability", 0.5))
+            verdict  = result.get("verdict", "Real")
+            reason   = result.get("reason", "")
+            return {
+                "available"  : True,
+                "fake_score" : fake_p,
+                "real_score" : 1 - fake_p,
+                "label"      : verdict,
+                "reason"     : reason
+            }
+        return {"available": False, "reason": f"Gemini status {response.status_code}"}
+
+    except Exception as e:
+        return {"available": False, "reason": str(e)}
+
+
+def combined_predict(face_pil, local_fake_p, local_real_p, threshold):
+    """
+    3-way ensemble: Local ResNet50 + HuggingFace ViT + Gemini Vision.
+    Weighted: Local 30% + HF 30% + Gemini 40% (Gemini most trusted).
+    Falls back gracefully if any API unavailable.
+    """
+    hf     = query_huggingface(face_pil)
+    gemini = query_gemini(face_pil)
+
+    sources   = ["Local ResNet50"]
+    fake_scores  = [local_fake_p * 0.30]
+    real_scores  = [local_real_p * 0.30]
+    total_weight = 0.30
+
+    if hf.get("available"):
+        fake_scores.append(hf["fake_score"] * 0.30)
+        real_scores.append(hf["real_score"] * 0.30)
+        total_weight += 0.30
+        sources.append("HuggingFace ViT")
+
+    if gemini.get("available"):
+        fake_scores.append(gemini["fake_score"] * 0.40)
+        real_scores.append(gemini["real_score"] * 0.40)
+        total_weight += 0.40
+        sources.append("Gemini Vision")
+
+    # Normalise by actual total weight used
+    combined_fake = sum(fake_scores) / total_weight
+    combined_real = sum(real_scores) / total_weight
+    source = " + ".join(sources)
+
+    label      = "Fake" if combined_fake * 100 >= threshold else "Real"
+    confidence = combined_fake * 100 if label == "Fake" else combined_real * 100
+
+    return label, confidence, combined_fake, combined_real, source, gemini
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -373,7 +499,7 @@ def predict_video(video_path, model, transform, detector):
 
 def run_gradcam(model, model_name, face_pil, transform):
     try:
-        model.train()  # train mode allows gradient flow through BatchNorm
+        model.train()
         target_layer = get_target_layer(model, model_name)
 
         acts_store  = {}
@@ -393,7 +519,7 @@ def run_gradcam(model, model_name, face_pil, transform):
         with torch.enable_grad():
             logits = model(t)
             model.zero_grad()
-            logits[0, 1].backward()  # backprop on "fake" class
+            logits[0, 1].backward()
 
         h1.remove()
         h2.remove()
@@ -429,10 +555,8 @@ def run_gradcam(model, model_name, face_pil, transform):
         return None
 
 
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-# NAVBAR  (rendered as HTML)
+# NAVBAR
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <div class="ds-navbar">
@@ -443,7 +567,6 @@ st.markdown("""
       <p class="ds-logo-sub">Forensic Media Analysis System</p>
     </div>
   </div>
-
   <div class="ds-status">
     <div class="ds-pulse"></div>
     SYSTEM ONLINE
@@ -468,7 +591,6 @@ tab_detect, tab_webcam, tab_metrics, tab_about = st.tabs([
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_detect:
 
-    # Privacy banner
     st.markdown("""
     <div class="ds-banner">
       <span>🔒 Local Processing</span><span class="sep">•</span>
@@ -478,7 +600,6 @@ with tab_detect:
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Settings row (hidden in expander to keep clean look) ──────────────────
     with st.expander("⚙️  Settings", expanded=False):
         scol1, scol2, scol3 = st.columns(3)
         with scol1:
@@ -491,7 +612,6 @@ with tab_detect:
     model_name = "resnet50" if model_choice == "ResNet50" else "efficientnet"
     model_path = MODEL_PATH_RESNET if model_choice == "ResNet50" else MODEL_PATH_EFFNET
 
-    # ── Two-column layout ──────────────────────────────────────────────────────
     st.markdown('<div class="ds-grid">', unsafe_allow_html=True)
     left_col, right_col = st.columns([1.15, 1], gap="large")
 
@@ -499,21 +619,14 @@ with tab_detect:
     with left_col:
         st.markdown("""
         <style>
-        /* Hide label */
         div[data-testid="stFileUploader"] > label { display:none !important; }
-
-        /* Card shell around the uploader */
         div[data-testid="stFileUploader"] {
             background: rgba(2,6,23,0.65) !important;
             border: 2px dashed rgba(148,163,184,0.22) !important;
             border-radius: 16px !important;
             transition: border-color .3s !important;
         }
-        div[data-testid="stFileUploader"]:hover {
-            border-color: rgba(37,99,235,0.5) !important;
-        }
-
-        /* Dropzone area inside */
+        div[data-testid="stFileUploader"]:hover { border-color: rgba(37,99,235,0.5) !important; }
         div[data-testid="stFileUploaderDropzone"] {
             background: transparent !important;
             border: none !important;
@@ -526,47 +639,26 @@ with tab_detect:
             text-align: center !important;
             gap: 0.5rem !important;
         }
-
-        /* Upload icon injected via CSS */
         div[data-testid="stFileUploaderDropzone"]::before {
             content: "⬆️";
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            display: flex; align-items: center; justify-content: center;
             width: 64px; height: 64px;
             background: rgba(37,99,235,0.14);
             border-radius: 50%;
             font-size: 1.8rem;
             margin-bottom: 0.75rem;
         }
-
-        /* Hide cloud SVG */
         div[data-testid="stFileUploaderDropzone"] svg { display:none !important; }
-
-        /* "Drag and drop file here" text → title style */
         div[data-testid="stFileUploaderDropzone"] span {
-            font-size: 1.35rem !important;
-            font-weight: 700 !important;
-            color: #ffffff !important;
+            font-size: 1.35rem !important; font-weight: 700 !important; color: #ffffff !important;
         }
-
-        /* "Limit 200MB" text → subtitle style */
-        div[data-testid="stFileUploaderDropzone"] small {
-            color: #64748b !important;
-            font-size: 0.75rem !important;
-        }
-
-        /* Browse Files button */
+        div[data-testid="stFileUploaderDropzone"] small { color: #64748b !important; font-size: 0.75rem !important; }
         div[data-testid="stFileUploaderDropzone"] button {
             background: linear-gradient(135deg,#2563eb,#1d4ed8) !important;
-            color: #fff !important;
-            border: none !important;
-            border-radius: 8px !important;
-            font-size: 0.95rem !important;
-            font-weight: 700 !important;
-            padding: 0.65rem 2.5rem !important;
-            margin-top: 1rem !important;
-            cursor: pointer !important;
+            color: #fff !important; border: none !important;
+            border-radius: 8px !important; font-size: 0.95rem !important;
+            font-weight: 700 !important; padding: 0.65rem 2.5rem !important;
+            margin-top: 1rem !important; cursor: pointer !important;
             box-shadow: 0 4px 15px rgba(37,99,235,0.35) !important;
             transition: all 0.2s !important;
         }
@@ -575,13 +667,10 @@ with tab_detect:
             box-shadow: 0 6px 22px rgba(37,99,235,0.5) !important;
             transform: translateY(-2px) !important;
         }
-
-        /* File chip */
         div[data-testid="stFileUploaderFile"] {
             background: rgba(37,99,235,0.1) !important;
             border: 1px solid rgba(37,99,235,0.25) !important;
-            border-radius: 8px !important;
-            margin: 0 1rem 0.75rem !important;
+            border-radius: 8px !important; margin: 0 1rem 0.75rem !important;
         }
         div[data-testid="stFileUploaderFile"] span { color: #60a5fa !important; }
         </style>
@@ -603,7 +692,6 @@ with tab_detect:
             if is_video:
                 st.video(tmp_path)
             else:
-                # Fixed width — never full screen
                 st.image(tmp_path, width=400)
 
     # ── RIGHT: Status / Result panel ──────────────────────────────────────────
@@ -619,7 +707,6 @@ with tab_detect:
             """, unsafe_allow_html=True)
 
         else:
-            # Load model
             with st.spinner(""):
                 model    = load_model_cached(model_name, model_path)
                 detector = load_detector()
@@ -634,7 +721,6 @@ with tab_detect:
                 </div>
                 """, unsafe_allow_html=True)
             else:
-                # ── SCANNING animation placeholder ─────────────────────────
                 scan_ph = st.empty()
                 scan_ph.markdown("""
                 <div class="ds-scan-panel">
@@ -651,13 +737,12 @@ with tab_detect:
                 </div>
                 """, unsafe_allow_html=True)
 
-                # ── Run inference ───────────────────────────────────────────
                 if not is_video:
                     pil_image = Image.open(tmp_path).convert("RGB")
                     _, real_p, fake_p, face_pil, tensor = predict_image(
                         pil_image, model, transform, detector)
-                    label      = "Fake" if fake_p*100 >= threshold else "Real"
-                    confidence = fake_p*100 if label=="Fake" else real_p*100
+                    label, confidence, fake_p, real_p, hf_source, hf_result = combined_predict(
+                        face_pil, fake_p, real_p, threshold)
                     risk       = compute_risk_level(label, confidence)
                     rec        = get_recommendation(label, risk)
                     real_count = fake_count = frame_count = 0
@@ -666,34 +751,50 @@ with tab_detect:
                     frame_results, face_images = predict_video(
                         tmp_path, model, transform, detector)
                     result     = ensemble_vote(frame_results)
-                    label      = result["label"]
-                    confidence = result["confidence"]
+                    local_label      = result["label"]
+                    local_confidence = result["confidence"]
                     real_count = sum(1 for c,_,_ in frame_results if c==0)
                     fake_count = len(frame_results)-real_count
                     frame_count= len(frame_results)
-                    risk       = compute_risk_level(label, confidence)
-                    rec        = get_recommendation(label, risk)
                     real_p     = result.get("avg_real_prob",0)/100
                     fake_p     = result.get("avg_fake_prob",0)/100
                     face_pil   = face_images[0] if face_images else None
 
+                    # Run Gemini on best face frame from video
+                    if face_pil is not None:
+                        label, confidence, fake_p, real_p, hf_source, hf_result = combined_predict(
+                            face_pil, fake_p, real_p, threshold)
+                    else:
+                        label      = local_label
+                        confidence = local_confidence
+                        hf_source  = "Ensemble voting"
+                        hf_result  = {"available": False}
+
+                    risk = compute_risk_level(label, confidence)
+                    rec  = get_recommendation(label, risk)
+
                 gradcam_img = run_gradcam(model, model_name, face_pil, transform) if face_pil else None
 
-                # ── Replace scanner with result ─────────────────────────────
+                # Peak fake stats for display
+                if not is_video:
+                    peak_fake_pct = fake_p * 100
+                    susp_ratio    = 100.0 if label == "Fake" else 0.0
+                else:
+                    peak_fake_pct = result.get("peak_fake_prob", fake_p * 100)
+                    susp_ratio    = result.get("suspicious_ratio", 0)
+
                 scan_ph.empty()
 
                 verdict_cls = "ds-verdict-fake" if label=="Fake" else "ds-verdict-real"
                 icon        = "🚨" if label=="Fake" else "✅"
                 bar_cls     = "ds-pbar-fill-fake" if label=="Fake" else "ds-pbar-fill-real"
                 bar_w       = f"{confidence:.1f}"
-
-                risk_cls  = {"High":"ds-risk-high","Medium":"ds-risk-medium"}.get(
-                             risk.split("-")[0], "ds-risk-low")
+                risk_cls    = {"High":"ds-risk-high","Medium":"ds-risk-medium"}.get(
+                               risk.split("-")[0], "ds-risk-low")
 
                 st.markdown(f"""
                 <div class="ds-result-panel">
                   <div class="{verdict_cls}">{icon}&nbsp; {label.upper()} DETECTED</div>
-
                   <div class="ds-conf-row">
                     <div class="ds-conf-item">
                       <div class="ds-conf-val-real">{real_p*100:.1f}%</div>
@@ -704,35 +805,32 @@ with tab_detect:
                       <div class="ds-conf-lbl">Fake</div>
                     </div>
                   </div>
-
                   <div class="ds-pbar-track">
                     <div class="{bar_cls}" style="width:{bar_w}%"></div>
                   </div>
-
                   <div style="text-align:center;margin-bottom:0.75rem;">
                     Risk Level &nbsp; <span class="{risk_cls}">{risk.upper()}</span>
                   </div>
-
                   <div class="ds-breakdown">
                     <h5>Forensic Analysis Breakdown</h5>
                     <ul>
                       <li>Frame-level facial texture analysis</li>
                       <li>Compression &amp; artifact detection</li>
-                      <li>Confidence-weighted ensemble voting</li>
+                      <li>4-strategy ensemble voting (v2)</li>
+                      <li>Peak fake frame: <b style="color:#e2e8f0">{peak_fake_pct:.1f}%</b> &nbsp;|&nbsp; Suspicious frames: <b style="color:#e2e8f0">{susp_ratio:.0f}%</b></li>
+                      <li>AI Source: <b style="color:#60a5fa">{hf_source}</b></li>
                       <li>Grad-CAM attention map generated</li>
                     </ul>
                   </div>
                 </div>
                 """, unsafe_allow_html=True)
 
-    st.markdown("</div>", unsafe_allow_html=True)  # close ds-grid
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── Show results below grid (only when uploaded + analysed) ───────────────
     if uploaded and 'label' in dir() and model:
 
         st.markdown("<div style='padding:0 2.5rem'>", unsafe_allow_html=True)
 
-        # Face + Grad-CAM
         if face_pil:
             st.markdown("---")
             gc1, gc2 = st.columns(2)
@@ -745,12 +843,8 @@ with tab_detect:
                     st.image(gradcam_img, width=280,
                              caption="Warm regions = model focus areas")
                 else:
-                    if isinstance(gradcam_img, str):
-                        st.error(f"Grad-CAM error: {gradcam_img}")
-                    else:
-                        st.info("Grad-CAM could not be generated.")
+                    st.info("Grad-CAM could not be generated.")
 
-        # Video timeline
         if is_video and frame_results:
             st.markdown("---")
             st.markdown("##### 📈 Frame-level Fake Probability Timeline")
@@ -770,7 +864,7 @@ with tab_detect:
             for sp in ax.spines.values(): sp.set_color("#1e293b")
             ax.legend(facecolor="#0f1535", labelcolor="#94a3b8", fontsize=8)
             plt.tight_layout()
-            st.pyplot(fig, use_container_width=True)
+            st.pyplot(fig, width='stretch')
             plt.close()
 
             st.markdown("##### 🧑 Sample Extracted Faces")
@@ -780,16 +874,14 @@ with tab_detect:
                     fp_pct = frame_results[i][2]*100
                     col.image(face_images[i],
                               caption=f"F{i+1} | Fake:{fp_pct:.0f}%",
-                              use_container_width=True)
+                              width='stretch')
 
-        # Recommendation
         st.markdown("---")
         if label == "Fake":
             st.error(f"⚠️ **Recommendation:** {rec}")
         else:
             st.success(f"✅ **Recommendation:** {rec}")
 
-        # PDF + Cyber portal
         st.markdown("---")
         pc1, pc2 = st.columns(2)
 
@@ -803,7 +895,7 @@ with tab_detect:
               </p>
             </div>
             """, unsafe_allow_html=True)
-            if st.button("📥 Generate PDF Report", use_container_width=True):
+            if st.button("📥 Generate PDF Report", width='stretch'):
                 with st.spinner("Building report…"):
                     fp_path = hp_path = None
                     if face_pil:
@@ -826,7 +918,7 @@ with tab_detect:
                     st.download_button(
                         "⬇️ Download Report PDF", f.read(),
                         file_name=f"DeepShield_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                        mime="application/pdf", use_container_width=True,
+                        mime="application/pdf", width='stretch',
                     )
 
         with pc2:
@@ -842,7 +934,7 @@ with tab_detect:
             st.link_button(
                 "🔗 cybercrime.gov.in",
                 "https://cybercrime.gov.in",
-                use_container_width=True,
+                width='stretch',
             )
             st.markdown(
                 "<p style='text-align:center;color:#64748b;font-size:0.8rem;margin-top:0.4rem;'>"
@@ -872,20 +964,41 @@ with tab_webcam:
 
     if snap and w_model:
         pil = Image.open(snap).convert("RGB")
-        with st.spinner("Analysing…"):
+        with st.spinner("Analysing with AI ensemble (Local + HuggingFace + Gemini)…"):
             _, rp, fp, face, _ = predict_image(pil, w_model, w_trans, w_det)
-            lbl  = "Fake" if fp*100 >= 75 else "Real"
-            conf = fp*100 if lbl=="Fake" else rp*100
-            rsk  = compute_risk_level(lbl, conf)
+            if face is not None:
+                # Use full 3-way ensemble for webcam too
+                lbl, conf, fp, rp, hf_src, gemini_res = combined_predict(
+                    face, fp, rp, threshold=75)
+            else:
+                lbl  = "Fake" if fp*100 >= 75 else "Real"
+                conf = fp*100 if lbl=="Fake" else rp*100
+                hf_src     = "Local only (no face detected)"
+                gemini_res = {"available": False}
+            rsk = compute_risk_level(lbl, conf)
 
         wc1, wc2, wc3 = st.columns(3)
-        wc1.image(pil,  caption="Captured", use_container_width=True)
-        wc2.image(face, caption="Face crop", use_container_width=True)
+        wc1.image(pil, caption="Captured", width='stretch')
+        if face is not None:
+            wc2.image(face, caption="Face crop", width='stretch')
         with wc3:
             clr = "🔴" if lbl=="Fake" else "🟢"
             st.metric("Verdict",    f"{clr} {lbl}")
             st.metric("Confidence", f"{conf:.1f}%")
             st.metric("Risk",       rsk)
+            gemini_reason = gemini_res.get("reason", "N/A") if gemini_res.get("available") else "Unavailable"
+            st.markdown(f"""
+            <div style="margin-top:1rem;padding:0.75rem;background:rgba(37,99,235,0.08);
+                        border:1px solid rgba(37,99,235,0.2);border-radius:8px;
+                        color:#94a3b8;font-size:0.75rem;line-height:1.6;">
+            <b style="color:#60a5fa">ℹ️ AI Ensemble Analysis</b><br>
+            Sources: <b style="color:#e2e8f0">{hf_src}</b><br>
+            Fake score: <b style="color:#e2e8f0">{fp*100:.1f}%</b> &nbsp;|&nbsp;
+            Real score: <b style="color:#e2e8f0">{rp*100:.1f}%</b><br>
+            Gemini reason: <b style="color:#e2e8f0">{gemini_reason}</b><br>
+            Threshold: <b style="color:#e2e8f0">75%</b> (raised for webcam)
+            </div>
+            """, unsafe_allow_html=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -907,10 +1020,9 @@ with tab_metrics:
     existing = {k:v for k,v in paths.items() if os.path.exists(v)}
 
     if existing:
-        keys = list(existing.keys())
         if "Training History" in existing:
             st.markdown("#### 📈 Training History")
-            st.image(existing["Training History"], use_container_width=True)
+            st.image(existing["Training History"], width='stretch')
 
         m1, m2 = st.columns(2)
         if "Confusion Matrix" in existing:
@@ -921,7 +1033,7 @@ with tab_metrics:
             m2.image(existing["ROC Curve"])
         if "Model Comparison" in existing:
             st.markdown("#### ⚖️ Model Comparison")
-            st.image(existing["Model Comparison"], use_container_width=True)
+            st.image(existing["Model Comparison"], width='stretch')
     else:
         st.markdown("""
         <div class="ds-await-panel" style="min-height:220px;">
@@ -969,7 +1081,7 @@ with tab_about:
     </div>
 
     <div class="ds-card">
-      <h3>⚖️ Ethics & Responsible Use</h3>
+      <h3>⚖️ Ethics &amp; Responsible Use</h3>
       <ul style="color:#94a3b8;line-height:2;margin-left:1.5rem;font-size:0.9rem;">
         <li>This tool is for <b style="color:#60a5fa">detection only</b>, not creation of deepfakes</li>
         <li>Results are probabilistic — always verify with a qualified forensics expert before legal action</li>
