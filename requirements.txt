@@ -5,6 +5,6 @@ torch==2.11.0
 torchvision==0.26.0
 scikit-learn
 matplotlib
-Pillow
+Pillow==12.1.1
 tqdm
 reportlab
