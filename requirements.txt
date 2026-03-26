@@ -1,6 +1,6 @@
 torch>=2.0.0
 torchvision>=0.15.0
-opencv-python>=4.8.0
+opencv-python-headless>=4.8.0
 mtcnn>=0.1.1
 streamlit>=1.28.0
 reportlab>=4.0.0
