@@ -267,6 +267,5 @@ If you encounter a deepfake being used for fraud, harassment, or blackmail:
 3. He et al. — *Deep Residual Learning for Image Recognition*, CVPR 2016
 4. Tan & Le — *EfficientNet*, ICML 2019
 5. Zhang et al. — *MTCNN*, IEEE Signal Processing Letters 2016
-6. Dolhansky et al. — *Deepfake Detection Challenge*, NeurIPS 2020
 
 ---
